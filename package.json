@@ -1,0 +1,22 @@
+{
+  "name": "niagara-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tools to assist Niagara module development workflows.",
+  "bin": {
+    "niagara-watch": "scripts/niagara-watch.ts"
+  },
+  "scripts": {
+    "start": "npm run watch-modules",
+    "watch-modules": "tsx scripts/niagara-watch.ts"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "cross-spawn": "^7.0.3",
+    "tsx": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}
