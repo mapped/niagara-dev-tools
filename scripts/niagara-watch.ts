@@ -1,28 +1,31 @@
 #!/usr/bin/env tsx
 
-import chokidar from 'chokidar';
-import type { FSWatcher } from 'chokidar';
-import { spawn } from 'cross-spawn';
-import type { ChildProcess } from 'child_process';
-import fs from 'fs';
-import path from 'path';
+import chokidar from "chokidar";
+import type { FSWatcher } from "chokidar";
+import { spawn } from "cross-spawn";
+import type { ChildProcess } from "child_process";
+import fs from "fs";
+import path from "path";
+import os from "os";
+
+// Simplified version: removed deprecated platCmd support and unused generic
+// command helpers. All logic intentionally resides in this single file for
+// easier distribution as a small dev utility.
 
 const DEFAULT_DEBOUNCE_MS = 5000;
 
 type PendingKey =
-  | 'niagaraHome'
-  | 'modulesDir'
-  | 'workbenchCmd'
-  | 'stationCmd'
-  | 'platCmd'
-  | 'debounceMs';
+  | "niagaraHome"
+  | "modulesDir"
+  | "workbenchCmd"
+  | "stationCmd"
+  | "debounceMs";
 
 interface MutableConfig {
   niagaraHome: string | null;
   modulesDir: string | null;
   stationName: string;
   stationCmd: string;
-  platCmd: string;
   workbenchCmd: string;
   debounceMs: number;
   launchWorkbench: boolean;
@@ -33,7 +36,6 @@ interface Config {
   modulesDir: string;
   stationName: string;
   stationCmd: string;
-  platCmd: string;
   workbenchCmd: string;
   debounceMs: number;
   launchWorkbench: boolean;
@@ -50,36 +52,35 @@ interface State {
   shuttingDown: boolean;
 }
 
-interface RunOptions {
-  allowFailure?: boolean;
-  env?: NodeJS.ProcessEnv;
-  cwd?: string;
-}
+// (Removed RunOptions and runCommand helper)
 
 function printUsage(): void {
-  console.log(`Usage: node scripts/niagara-watch.ts [options] <station-name>
+  console.log(`Usage: niagara-watch [options] <station-name>
 
 Options:
-      --niagara-home <path>  Niagara installation directory (default: $NIAGARA_HOME)
-  -m, --modules <path>       Modules directory to watch (default: NIAGARA_HOME/modules)
-      --workbench-cmd <cmd>  Command used to start the workbench (default: wb)
-      --station-cmd <cmd>    Command used to start the station (default: station)
-      --plat-cmd <cmd>       Command used to stop the station (default: plat)
-      --debounce <ms>        Debounce delay before restarts (default: ${DEFAULT_DEBOUNCE_MS}ms)
-      --no-workbench         Skip launching the workbench process
-  -h, --help                 Show this help message
+  --niagara-home <path>   Niagara installation directory (default: $NIAGARA_HOME)
+  -m, --modules <path>    Modules directory to watch (default: NIAGARA_HOME/modules)
+  --workbench-cmd <cmd>   Command used to start the workbench (default: wb)
+  --station-cmd <cmd>     Command used to start the station (default: station)
+  --debounce <ms>         Debounce delay before restarts (default: ${DEFAULT_DEBOUNCE_MS}ms)
+  --no-workbench          Skip launching the workbench process
+  -h, --help              Show this help message
+  --plat-cmd <ignored>    (deprecated; accepted for backward compatibility only)
 `);
 }
 
 function parseArgs(argv: string[]): Config {
   const args = argv.slice(2);
   const config: MutableConfig = {
-    niagaraHome: process.env.NIAGARA_HOME ? path.resolve(process.env.NIAGARA_HOME) : null,
-    modulesDir: process.env.NIAGARA_MODULES_DIR ? path.resolve(process.env.NIAGARA_MODULES_DIR) : null,
-    stationName: process.env.NIAGARA_STATION || '',
-    stationCmd: process.env.NIAGARA_STATION_CMD || 'station',
-    platCmd: process.env.NIAGARA_PLAT_CMD || 'plat',
-    workbenchCmd: process.env.NIAGARA_WORKBENCH_CMD || 'wb',
+    niagaraHome: process.env.NIAGARA_HOME
+      ? path.resolve(process.env.NIAGARA_HOME)
+      : null,
+    modulesDir: process.env.NIAGARA_MODULES_DIR
+      ? path.resolve(process.env.NIAGARA_MODULES_DIR)
+      : null,
+    stationName: process.env.NIAGARA_STATION || "",
+    stationCmd: process.env.NIAGARA_STATION_CMD || "station",
+    workbenchCmd: process.env.NIAGARA_WORKBENCH_CMD || "wb",
     debounceMs: Number(process.env.NIAGARA_DEBOUNCE_MS) || DEFAULT_DEBOUNCE_MS,
     launchWorkbench: true,
   };
@@ -92,16 +93,15 @@ function parseArgs(argv: string[]): Config {
     if (pendingValueKey) {
       const value = args[i];
       switch (pendingValueKey) {
-        case 'debounceMs':
+        case "debounceMs":
           config.debounceMs = Number(value);
           break;
-        case 'niagaraHome':
-        case 'modulesDir':
+        case "niagaraHome":
+        case "modulesDir":
           config[pendingValueKey] = path.resolve(value);
           break;
-        case 'workbenchCmd':
-        case 'stationCmd':
-        case 'platCmd':
+        case "workbenchCmd":
+        case "stationCmd":
           config[pendingValueKey] = value;
           break;
         default:
@@ -112,35 +112,38 @@ function parseArgs(argv: string[]): Config {
     }
 
     switch (arg) {
-      case '--niagara-home':
-        pendingValueKey = 'niagaraHome';
+      case "--niagara-home":
+        pendingValueKey = "niagaraHome";
         break;
-      case '-m':
-      case '--modules':
-        pendingValueKey = 'modulesDir';
+      case "-m":
+      case "--modules":
+        pendingValueKey = "modulesDir";
         break;
-      case '--workbench-cmd':
-        pendingValueKey = 'workbenchCmd';
+      case "--workbench-cmd":
+        pendingValueKey = "workbenchCmd";
         break;
-      case '--station-cmd':
-        pendingValueKey = 'stationCmd';
+      case "--station-cmd":
+        pendingValueKey = "stationCmd";
         break;
-      case '--plat-cmd':
-        pendingValueKey = 'platCmd';
+      case "--plat-cmd":
+        // Accept & ignore deprecated flag (optionally skip its value)
+        if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+          i += 1; // consume value silently
+        }
         break;
-      case '--debounce':
-        pendingValueKey = 'debounceMs';
+      case "--debounce":
+        pendingValueKey = "debounceMs";
         break;
-      case '--no-workbench':
+      case "--no-workbench":
         config.launchWorkbench = false;
         break;
-      case '-h':
-      case '--help':
+      case "-h":
+      case "--help":
         printUsage();
         process.exit(0);
         break;
       default:
-        if (!arg.startsWith('-') && !config.stationName) {
+        if (!arg.startsWith("-") && !config.stationName) {
           config.stationName = arg;
         } else {
           console.error(`Unknown option: ${arg}`);
@@ -157,37 +160,42 @@ function parseArgs(argv: string[]): Config {
   }
 
   if (!config.stationName) {
-    console.error('A station name is required. Provide it as a positional argument or via NIAGARA_STATION.');
+    console.error(
+      "A station name is required. Provide it as a positional argument or via NIAGARA_STATION."
+    );
     printUsage();
     process.exit(1);
   }
 
   if (!config.niagaraHome) {
-    console.error('NIAGARA_HOME must be set (environment variable or --niagara-home).');
+    console.error(
+      "NIAGARA_HOME must be set (environment variable or --niagara-home)."
+    );
     process.exit(1);
   }
 
   if (Number.isNaN(config.debounceMs) || config.debounceMs < 0) {
-    console.error('Debounce value must be a positive number of milliseconds.');
+    console.error("Debounce value must be a positive number of milliseconds.");
     process.exit(1);
   }
 
   const resolvedHome = path.resolve(config.niagaraHome);
-  const binDir = path.join(resolvedHome, 'bin');
+  const binDir = path.join(resolvedHome, "bin");
 
   if (!fs.existsSync(binDir)) {
     console.error(`Niagara bin directory not found: ${binDir}`);
     process.exit(1);
   }
 
-  const modulesDir = config.modulesDir ? path.resolve(config.modulesDir) : path.join(resolvedHome, 'modules');
+  const modulesDir = config.modulesDir
+    ? path.resolve(config.modulesDir)
+    : path.join(resolvedHome, "modules");
 
   return {
     niagaraHome: resolvedHome,
     modulesDir,
     stationName: config.stationName,
     stationCmd: config.stationCmd,
-    platCmd: config.platCmd,
     workbenchCmd: config.workbenchCmd,
     debounceMs: config.debounceMs,
     launchWorkbench: config.launchWorkbench,
@@ -196,52 +204,30 @@ function parseArgs(argv: string[]): Config {
 }
 
 function createCommandEnv(config: Config): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, NIAGARA_HOME: config.niagaraHome };
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'PATH';
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    NIAGARA_HOME: config.niagaraHome,
+  };
+  const pathKey =
+    Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
   const currentPath = env[pathKey];
-  env[pathKey] = currentPath ? `${config.binDir}${path.delimiter}${currentPath}` : config.binDir;
+  env[pathKey] = currentPath
+    ? `${config.binDir}${path.delimiter}${currentPath}`
+    : config.binDir;
   return env;
 }
 
-function formatExit(code: number | null, signal: NodeJS.Signals | null): string {
+function formatExit(
+  code: number | null,
+  signal: NodeJS.Signals | null
+): string {
   if (code !== null) {
     return `code ${code}`;
   }
-  return signal ? `signal ${signal}` : 'unknown exit';
+  return signal ? `signal ${signal}` : "unknown exit";
 }
 
-async function runCommand(command: string, args: string[], label: string, options: RunOptions = {}): Promise<void> {
-  const { allowFailure = false, env, cwd } = options;
-  console.log(`[cmd] ${label}`);
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: 'inherit',
-      env: env ?? process.env,
-      cwd,
-      windowsHide: false,
-    });
-
-    child.on('error', (err) => {
-      if (allowFailure) {
-        console.warn(`[cmd] ${label} failed: ${err.message}`);
-        resolve();
-      } else {
-        reject(err);
-      }
-    });
-
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolve();
-      } else if (allowFailure) {
-        console.warn(`[cmd] ${label} exited with ${formatExit(code, signal)}`);
-        resolve();
-      } else {
-        reject(new Error(`${label} exited with ${formatExit(code, signal)}`));
-      }
-    });
-  });
-}
+// (Removed runCommand helper)
 
 async function main(): Promise<void> {
   const config = parseArgs(process.argv);
@@ -269,7 +255,10 @@ async function main(): Promise<void> {
     persistent: true,
     awaitWriteFinish: {
       stabilityThreshold: config.debounceMs,
-      pollInterval: Math.min(100, Math.max(20, Math.floor(config.debounceMs / 2))),
+      pollInterval: Math.min(
+        100,
+        Math.max(20, Math.floor(config.debounceMs / 2))
+      ),
     },
   });
 
@@ -285,7 +274,7 @@ async function main(): Promise<void> {
         if (config.launchWorkbench) {
           await restartWorkbench(state);
         }
-        console.log('[watch] Restart complete.');
+        console.log("[watch] Restart complete.");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[watch] Restart failed: ${message}`);
@@ -293,13 +282,17 @@ async function main(): Promise<void> {
     }, config.debounceMs);
   };
 
-  watcher.on('all', (event, changedPath) => {
+  watcher.on("all", (event, changedPath) => {
     const relative = path.relative(config.modulesDir, changedPath);
     scheduleRestart(`${event} ${relative}`);
   });
 
-  watcher.on('error', (err) => {
-    console.error(`[watch] Watcher error: ${err instanceof Error ? err.message : String(err)}`);
+  watcher.on("error", (err) => {
+    console.error(
+      `[watch] Watcher error: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
   });
 
   const shutdown = async (): Promise<void> => {
@@ -307,11 +300,15 @@ async function main(): Promise<void> {
       return;
     }
     state.shuttingDown = true;
-    console.log('Shutting down watcher...');
+    console.log("Shutting down watcher...");
     try {
       await watcher.close();
     } catch (err) {
-      console.error(`Error closing watcher: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `Error closing watcher: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
     }
     if (state.scheduledRestart) {
       clearTimeout(state.scheduledRestart);
@@ -327,8 +324,8 @@ async function main(): Promise<void> {
     void shutdown();
   };
 
-  process.on('SIGINT', handleShutdown);
-  process.on('SIGTERM', handleShutdown);
+  process.on("SIGINT", handleShutdown);
+  process.on("SIGTERM", handleShutdown);
 
   try {
     await startStation(state);
@@ -336,21 +333,24 @@ async function main(): Promise<void> {
       startWorkbench(state);
     }
   } catch (err) {
-    console.error(`Failed to launch: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `Failed to launch: ${err instanceof Error ? err.message : String(err)}`
+    );
     await shutdown();
   }
 }
 
 async function startStation(state: State): Promise<void> {
   if (state.stationProcess) {
-    console.log('[station] Already running, skipping start.');
+    console.log("[station] Already running, skipping start.");
     return;
   }
 
   state.stationStopping = false;
   console.log(`[station] Starting station ${state.config.stationName}...`);
+  // Use pipe for stdin so we can send a graceful quit command.
   const proc = spawn(state.config.stationCmd, [state.config.stationName], {
-    stdio: 'inherit',
+    stdio: ["pipe", "inherit", "inherit"],
     env: state.commandEnv,
     cwd: state.config.binDir,
     windowsHide: false,
@@ -358,52 +358,67 @@ async function startStation(state: State): Promise<void> {
 
   state.stationProcess = proc;
 
-  proc.on('error', (err) => {
-    console.error(`[station] Failed to launch: ${err instanceof Error ? err.message : String(err)}`);
+  proc.on("error", (err) => {
+    console.error(
+      `[station] Failed to launch: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
     if (state.stationProcess === proc) {
       state.stationProcess = null;
     }
   });
 
-  proc.on('exit', (code, signal) => {
+  proc.on("exit", (code, signal) => {
     console.log(`[station] Exited with ${formatExit(code, signal)}`);
     if (state.stationProcess === proc) {
       state.stationProcess = null;
     }
     if (!state.shuttingDown && !state.stationStopping) {
-      console.log('[station] Process stopped unexpectedly. Restarting...');
+      console.log("[station] Process stopped unexpectedly. Restarting...");
       void startStation(state);
     }
   });
 }
 
 async function stopStation(state: State): Promise<void> {
-  const { platCmd, stationName, binDir } = state.config;
   const proc = state.stationProcess;
   if (!proc) {
-    try {
-      await runCommand(platCmd, ['stop', stationName], `Stopping station ${stationName}`, {
-        allowFailure: true,
-        env: state.commandEnv,
-        cwd: binDir,
-      });
-    } catch (err) {
-      console.error(`[station] Failed to stop: ${err instanceof Error ? err.message : String(err)}`);
-    }
     state.stationStopping = false;
     return;
   }
 
-  state.stationStopping = true;
+  if (state.stationStopping) {
+    return; // already stopping
+  }
 
-  try {
-    await runCommand(platCmd, ['stop', stationName], `Stopping station ${stationName}`, {
-      allowFailure: true,
-      env: state.commandEnv,
-      cwd: binDir,
-    });
-  } catch (err) {
-    console.error(`[station] Failed to stop: ${err instanceof Error ? err.message : String(err)}`);
+  state.stationStopping = true;
+  console.log("[station] Sending quit command...");
+
+  const quitCommand = `quit${os.EOL}`;
+  if (proc.stdin && !proc.stdin.destroyed) {
+    try {
+      proc.stdin.write(quitCommand, (err) => {
+        if (err) {
+          console.error(`[station] Failed writing quit: ${err.message}`);
+        }
+        try {
+          proc.stdin && proc.stdin.end();
+        } catch {
+          /* ignore */
+        }
+      });
+    } catch (err) {
+      console.error(
+        `[station] Error sending quit: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  } else {
+    console.warn(
+      "[station] stdin not available to send quit; proceeding to wait for exit."
+    );
   }
 
   await new Promise<void>((resolve) => {
@@ -411,13 +426,9 @@ async function stopStation(state: State): Promise<void> {
     let forceKillTimer: NodeJS.Timeout | null = null;
 
     const finalize = () => {
-      if (finished) {
-        return;
-      }
+      if (finished) return;
       finished = true;
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       if (state.stationProcess === proc) {
         state.stationProcess = null;
       }
@@ -425,32 +436,61 @@ async function stopStation(state: State): Promise<void> {
       resolve();
     };
 
-    proc.once('exit', finalize);
+    proc.once("exit", finalize);
 
+    // After 5s, escalate to SIGTERM, then after 3s more force kill
     forceKillTimer = setTimeout(() => {
-      if (finished) {
-        return;
-      }
-      console.warn('[station] Station did not exit; forcing termination.');
-      if (process.platform === 'win32') {
-        const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
-          stdio: 'inherit',
-          env: state.commandEnv,
-          windowsHide: false,
-        });
-        killer.once('exit', finalize);
-        killer.once('error', (killErr) => {
-          console.error(`[station] taskkill failed: ${killErr instanceof Error ? killErr.message : String(killErr)}`);
-          finalize();
-        });
-      } else {
-        try {
-          process.kill(proc.pid, 'SIGKILL');
-        } catch (killErr) {
-          console.error(`[station] SIGKILL failed: ${killErr instanceof Error ? killErr.message : String(killErr)}`);
+      if (finished) return;
+      console.warn("[station] Graceful quit timeout; sending SIGTERM.");
+      try {
+        // On Windows passing undefined sends a normal termination signal; ensure pid exists
+        if (proc.pid) {
+          proc.kill(process.platform === "win32" ? undefined : "SIGTERM");
         }
-        finalize();
+      } catch (err) {
+        console.error(
+          `[station] Failed SIGTERM: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
       }
+      setTimeout(() => {
+        if (finished) return;
+        console.warn("[station] Forcing termination.");
+        if (process.platform === "win32") {
+          const killer = spawn(
+            "taskkill",
+            ["/PID", String(proc.pid), "/T", "/F"],
+            {
+              stdio: "inherit",
+              env: state.commandEnv,
+              windowsHide: false,
+            }
+          );
+          killer.once("exit", finalize);
+          killer.once("error", (killErr) => {
+            console.error(
+              `[station] taskkill failed: ${
+                killErr instanceof Error ? killErr.message : String(killErr)
+              }`
+            );
+            finalize();
+          });
+        } else {
+          try {
+            if (proc.pid) {
+              process.kill(proc.pid, "SIGKILL");
+            }
+          } catch (killErr) {
+            console.error(
+              `[station] SIGKILL failed: ${
+                killErr instanceof Error ? killErr.message : String(killErr)
+              }`
+            );
+          }
+          finalize();
+        }
+      }, 3000);
     }, 5000);
   });
 }
@@ -462,13 +502,13 @@ async function restartStation(state: State): Promise<void> {
 
 function startWorkbench(state: State): void {
   if (state.workbenchProcess) {
-    console.log('[workbench] Already running, skipping start.');
+    console.log("[workbench] Already running, skipping start.");
     return;
   }
 
-  console.log('[workbench] Starting workbench...');
+  console.log("[workbench] Starting workbench...");
   const proc = spawn(state.config.workbenchCmd, [], {
-    stdio: 'inherit',
+    stdio: "inherit",
     env: state.commandEnv,
     cwd: state.config.binDir,
     windowsHide: false,
@@ -476,20 +516,24 @@ function startWorkbench(state: State): void {
 
   state.workbenchProcess = proc;
 
-  proc.on('error', (err) => {
-    console.error(`[workbench] Failed to launch: ${err instanceof Error ? err.message : String(err)}`);
+  proc.on("error", (err) => {
+    console.error(
+      `[workbench] Failed to launch: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
     if (state.workbenchProcess === proc) {
       state.workbenchProcess = null;
     }
   });
 
-  proc.on('exit', (code, signal) => {
+  proc.on("exit", (code, signal) => {
     console.log(`[workbench] Exited with ${formatExit(code, signal)}`);
     if (state.workbenchProcess === proc) {
       state.workbenchProcess = null;
     }
     if (!state.shuttingDown && state.config.launchWorkbench) {
-      console.log('[workbench] Process stopped unexpectedly. Restarting...');
+      console.log("[workbench] Process stopped unexpectedly. Restarting...");
       startWorkbench(state);
     }
   });
@@ -502,7 +546,7 @@ async function stopWorkbench(state: State): Promise<void> {
   }
 
   state.workbenchProcess = null;
-  console.log('[workbench] Stopping workbench...');
+  console.log("[workbench] Stopping workbench...");
 
   await new Promise<void>((resolve) => {
     let finished = false;
@@ -519,12 +563,16 @@ async function stopWorkbench(state: State): Promise<void> {
       resolve();
     };
 
-    proc.once('exit', finalize);
+    proc.once("exit", finalize);
 
     try {
-      proc.kill('SIGTERM');
+      proc.kill("SIGTERM");
     } catch (err) {
-      console.error(`[workbench] Failed to send SIGTERM: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `[workbench] Failed to send SIGTERM: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
       finalize();
       return;
     }
@@ -533,23 +581,37 @@ async function stopWorkbench(state: State): Promise<void> {
       if (finished) {
         return;
       }
-      console.warn('[workbench] Workbench did not exit; forcing termination.');
-      if (process.platform === 'win32') {
-        const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
-          stdio: 'inherit',
-          env: state.commandEnv,
-          windowsHide: false,
-        });
-        killer.once('exit', finalize);
-        killer.once('error', (killErr) => {
-          console.error(`[workbench] taskkill failed: ${killErr instanceof Error ? killErr.message : String(killErr)}`);
+      console.warn("[workbench] Workbench did not exit; forcing termination.");
+      if (process.platform === "win32") {
+        const killer = spawn(
+          "taskkill",
+          ["/PID", String(proc.pid), "/T", "/F"],
+          {
+            stdio: "inherit",
+            env: state.commandEnv,
+            windowsHide: false,
+          }
+        );
+        killer.once("exit", finalize);
+        killer.once("error", (killErr) => {
+          console.error(
+            `[workbench] taskkill failed: ${
+              killErr instanceof Error ? killErr.message : String(killErr)
+            }`
+          );
           finalize();
         });
       } else {
         try {
-          process.kill(proc.pid, 'SIGKILL');
+          if (proc.pid) {
+            process.kill(proc.pid, "SIGKILL");
+          }
         } catch (killErr) {
-          console.error(`[workbench] SIGKILL failed: ${killErr instanceof Error ? killErr.message : String(killErr)}`);
+          console.error(
+            `[workbench] SIGKILL failed: ${
+              killErr instanceof Error ? killErr.message : String(killErr)
+            }`
+          );
         }
         finalize();
       }

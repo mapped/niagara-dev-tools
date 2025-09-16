@@ -30,7 +30,7 @@ npx niagara-watch <station-name>
 - `-m, --modules <path>`: Directory containing Niagara modules to watch (defaults to `NIAGARA_HOME/modules` or `NIAGARA_MODULES_DIR`).
 - `--workbench-cmd <cmd>`: Overrides the command used to start the workbench (default `wb`).
 - `--station-cmd <cmd>`: Overrides the command used to start the station (default `station`).
-- `--plat-cmd <cmd>`: Overrides the command used to stop the station (default `plat`).
+- `--plat-cmd <cmd>`: (Deprecated) Kept for backward compatibility; station now stops by sending `quit` to its stdin.
 - `--debounce <ms>`: Debounce interval before issuing restarts (default 5000ms).
 - `--no-workbench`: Skip launching and managing the workbench process.
 
@@ -39,7 +39,7 @@ Environment variables `NIAGARA_STATION`, `NIAGARA_MODULES_DIR`, `NIAGARA_WORKBEN
 ### Behaviour
 
 1. Prepends `NIAGARA_HOME/bin` to `PATH`, ensuring Niagara CLI commands are available on every platform.
-2. Launches the station (`station <station-name>`) and keeps its lifecycle paired with `plat stop <station-name>`.
+2. Launches the station (`station <station-name>`) and stops it gracefully by writing `quit` followed by the platform-specific newline (e.g. `\n` on Unix, `\r\n` on Windows) to the station process stdin. Previously this used `plat stop <station-name>`; that command is no longer invoked (auth not required).
 3. Launches the workbench (`wb`) and restarts it by killing the process.
 4. Watches the modules directory via [chokidar](https://github.com/paulmillr/chokidar). When files change, both processes are restarted.
 5. Cleans up both processes on exit (Ctrl+C / SIGTERM).
