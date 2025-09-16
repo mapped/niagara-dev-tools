@@ -43,6 +43,8 @@ interface Config {
 interface State {
   config: Config;
   commandEnv: NodeJS.ProcessEnv;
+  stationProcess: ChildProcess | null;
+  stationStopping: boolean;
   workbenchProcess: ChildProcess | null;
   scheduledRestart: NodeJS.Timeout | null;
   shuttingDown: boolean;
@@ -255,6 +257,8 @@ async function main(): Promise<void> {
   const state: State = {
     config,
     commandEnv,
+    stationProcess: null,
+    stationStopping: false,
     workbenchProcess: null,
     scheduledRestart: null,
     shuttingDown: false,
@@ -338,15 +342,60 @@ async function main(): Promise<void> {
 }
 
 async function startStation(state: State): Promise<void> {
-  const { stationCmd, stationName, binDir } = state.config;
-  await runCommand(stationCmd, [stationName], `Starting station ${stationName}`, {
+  if (state.stationProcess) {
+    console.log('[station] Already running, skipping start.');
+    return;
+  }
+
+  state.stationStopping = false;
+  console.log(`[station] Starting station ${state.config.stationName}...`);
+  const proc = spawn(state.config.stationCmd, [state.config.stationName], {
+    stdio: 'inherit',
     env: state.commandEnv,
-    cwd: binDir,
+    cwd: state.config.binDir,
+    windowsHide: false,
+  });
+
+  state.stationProcess = proc;
+
+  proc.on('error', (err) => {
+    console.error(`[station] Failed to launch: ${err instanceof Error ? err.message : String(err)}`);
+    if (state.stationProcess === proc) {
+      state.stationProcess = null;
+    }
+  });
+
+  proc.on('exit', (code, signal) => {
+    console.log(`[station] Exited with ${formatExit(code, signal)}`);
+    if (state.stationProcess === proc) {
+      state.stationProcess = null;
+    }
+    if (!state.shuttingDown && !state.stationStopping) {
+      console.log('[station] Process stopped unexpectedly. Restarting...');
+      void startStation(state);
+    }
   });
 }
 
 async function stopStation(state: State): Promise<void> {
   const { platCmd, stationName, binDir } = state.config;
+  const proc = state.stationProcess;
+  if (!proc) {
+    try {
+      await runCommand(platCmd, ['stop', stationName], `Stopping station ${stationName}`, {
+        allowFailure: true,
+        env: state.commandEnv,
+        cwd: binDir,
+      });
+    } catch (err) {
+      console.error(`[station] Failed to stop: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    state.stationStopping = false;
+    return;
+  }
+
+  state.stationStopping = true;
+
   try {
     await runCommand(platCmd, ['stop', stationName], `Stopping station ${stationName}`, {
       allowFailure: true,
@@ -356,6 +405,54 @@ async function stopStation(state: State): Promise<void> {
   } catch (err) {
     console.error(`[station] Failed to stop: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  await new Promise<void>((resolve) => {
+    let finished = false;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+
+    const finalize = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+      if (state.stationProcess === proc) {
+        state.stationProcess = null;
+      }
+      state.stationStopping = false;
+      resolve();
+    };
+
+    proc.once('exit', finalize);
+
+    forceKillTimer = setTimeout(() => {
+      if (finished) {
+        return;
+      }
+      console.warn('[station] Station did not exit; forcing termination.');
+      if (process.platform === 'win32') {
+        const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+          stdio: 'inherit',
+          env: state.commandEnv,
+          windowsHide: false,
+        });
+        killer.once('exit', finalize);
+        killer.once('error', (killErr) => {
+          console.error(`[station] taskkill failed: ${killErr instanceof Error ? killErr.message : String(killErr)}`);
+          finalize();
+        });
+      } else {
+        try {
+          process.kill(proc.pid, 'SIGKILL');
+        } catch (killErr) {
+          console.error(`[station] SIGKILL failed: ${killErr instanceof Error ? killErr.message : String(killErr)}`);
+        }
+        finalize();
+      }
+    }, 5000);
+  });
 }
 
 async function restartStation(state: State): Promise<void> {
