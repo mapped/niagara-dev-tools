@@ -8,6 +8,10 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
+// Simplified version: removed deprecated platCmd support and unused generic
+// command helpers. All logic intentionally resides in this single file for
+// easier distribution as a small dev utility.
+
 const DEFAULT_DEBOUNCE_MS = 5000;
 
 type PendingKey =
@@ -15,7 +19,6 @@ type PendingKey =
   | "modulesDir"
   | "workbenchCmd"
   | "stationCmd"
-  | "platCmd"
   | "debounceMs";
 
 interface MutableConfig {
@@ -23,7 +26,6 @@ interface MutableConfig {
   modulesDir: string | null;
   stationName: string;
   stationCmd: string;
-  platCmd: string;
   workbenchCmd: string;
   debounceMs: number;
   launchWorkbench: boolean;
@@ -34,7 +36,6 @@ interface Config {
   modulesDir: string;
   stationName: string;
   stationCmd: string;
-  platCmd: string;
   workbenchCmd: string;
   debounceMs: number;
   launchWorkbench: boolean;
@@ -51,24 +52,20 @@ interface State {
   shuttingDown: boolean;
 }
 
-interface RunOptions {
-  allowFailure?: boolean;
-  env?: NodeJS.ProcessEnv;
-  cwd?: string;
-}
+// (Removed RunOptions and runCommand helper)
 
 function printUsage(): void {
-  console.log(`Usage: node scripts/niagara-watch.ts [options] <station-name>
+  console.log(`Usage: niagara-watch [options] <station-name>
 
 Options:
-      --niagara-home <path>  Niagara installation directory (default: $NIAGARA_HOME)
-  -m, --modules <path>       Modules directory to watch (default: NIAGARA_HOME/modules)
-      --workbench-cmd <cmd>  Command used to start the workbench (default: wb)
-  --station-cmd <cmd>    Command used to start the station (default: station)
-  --plat-cmd <cmd>       (deprecated) Previously used to stop the station (ignored)
-      --debounce <ms>        Debounce delay before restarts (default: ${DEFAULT_DEBOUNCE_MS}ms)
-      --no-workbench         Skip launching the workbench process
-  -h, --help                 Show this help message
+  --niagara-home <path>   Niagara installation directory (default: $NIAGARA_HOME)
+  -m, --modules <path>    Modules directory to watch (default: NIAGARA_HOME/modules)
+  --workbench-cmd <cmd>   Command used to start the workbench (default: wb)
+  --station-cmd <cmd>     Command used to start the station (default: station)
+  --debounce <ms>         Debounce delay before restarts (default: ${DEFAULT_DEBOUNCE_MS}ms)
+  --no-workbench          Skip launching the workbench process
+  -h, --help              Show this help message
+  --plat-cmd <ignored>    (deprecated; accepted for backward compatibility only)
 `);
 }
 
@@ -83,8 +80,6 @@ function parseArgs(argv: string[]): Config {
       : null,
     stationName: process.env.NIAGARA_STATION || "",
     stationCmd: process.env.NIAGARA_STATION_CMD || "station",
-    // platCmd retained for backward compatibility (no longer used). We still parse it so older scripts don't break.
-    platCmd: process.env.NIAGARA_PLAT_CMD || "plat",
     workbenchCmd: process.env.NIAGARA_WORKBENCH_CMD || "wb",
     debounceMs: Number(process.env.NIAGARA_DEBOUNCE_MS) || DEFAULT_DEBOUNCE_MS,
     launchWorkbench: true,
@@ -107,7 +102,6 @@ function parseArgs(argv: string[]): Config {
           break;
         case "workbenchCmd":
         case "stationCmd":
-        case "platCmd":
           config[pendingValueKey] = value;
           break;
         default:
@@ -132,8 +126,10 @@ function parseArgs(argv: string[]): Config {
         pendingValueKey = "stationCmd";
         break;
       case "--plat-cmd":
-        // deprecated flag accepted for compatibility but ignored beyond parsing
-        pendingValueKey = "platCmd";
+        // Accept & ignore deprecated flag (optionally skip its value)
+        if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+          i += 1; // consume value silently
+        }
         break;
       case "--debounce":
         pendingValueKey = "debounceMs";
@@ -200,7 +196,6 @@ function parseArgs(argv: string[]): Config {
     modulesDir,
     stationName: config.stationName,
     stationCmd: config.stationCmd,
-    platCmd: config.platCmd,
     workbenchCmd: config.workbenchCmd,
     debounceMs: config.debounceMs,
     launchWorkbench: config.launchWorkbench,
@@ -232,43 +227,7 @@ function formatExit(
   return signal ? `signal ${signal}` : "unknown exit";
 }
 
-async function runCommand(
-  command: string,
-  args: string[],
-  label: string,
-  options: RunOptions = {}
-): Promise<void> {
-  const { allowFailure = false, env, cwd } = options;
-  console.log(`[cmd] ${label}`);
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: "inherit",
-      env: env ?? process.env,
-      cwd,
-      windowsHide: false,
-    });
-
-    child.on("error", (err) => {
-      if (allowFailure) {
-        console.warn(`[cmd] ${label} failed: ${err.message}`);
-        resolve();
-      } else {
-        reject(err);
-      }
-    });
-
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolve();
-      } else if (allowFailure) {
-        console.warn(`[cmd] ${label} exited with ${formatExit(code, signal)}`);
-        resolve();
-      } else {
-        reject(new Error(`${label} exited with ${formatExit(code, signal)}`));
-      }
-    });
-  });
-}
+// (Removed runCommand helper)
 
 async function main(): Promise<void> {
   const config = parseArgs(process.argv);
